@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 
 type Project = {
   id: string;
@@ -86,6 +87,125 @@ export default function ProjectEditForm({
     });
   }
 
+  async function uploadVideosDirectly() {
+    if (projectVideos.length === 0) {
+      return;
+    }
+
+    const supabase = createClient();
+
+    for (const video of projectVideos) {
+      setMessage(
+        `Preparing video upload: ${video.name}`,
+      );
+
+      /*
+       * Step 1:
+       * Ask our secure server route for a
+       * temporary signed upload token.
+       *
+       * Only metadata is sent to Vercel.
+       * The actual video file is NOT sent here.
+       */
+      const prepareResponse = await fetch(
+        `/api/admin/projects/${project.id}/video-upload`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            action: "prepare",
+            fileName: video.name,
+            fileType: video.type,
+            fileSize: video.size,
+          }),
+        },
+      );
+
+      const prepareData =
+        await prepareResponse.json();
+
+      if (!prepareResponse.ok) {
+        throw new Error(
+          prepareData.error ||
+            `Unable to prepare video upload for ${video.name}.`,
+        );
+      }
+
+      /*
+       * Step 2:
+       * Upload the actual video directly
+       * from the browser to Supabase Storage.
+       *
+       * This bypasses the Vercel Function
+       * request-body limit.
+       */
+      setMessage(
+        `Uploading video: ${video.name}`,
+      );
+
+      const { error: uploadError } =
+        await supabase.storage
+          .from("project-media")
+          .uploadToSignedUrl(
+            prepareData.storagePath,
+            prepareData.token,
+            video,
+          );
+
+      if (uploadError) {
+        console.error(
+          "Direct video upload error:",
+          uploadError,
+        );
+
+        throw new Error(
+          `Unable to upload ${video.name}: ${uploadError.message}`,
+        );
+      }
+
+      /*
+       * Step 3:
+       * Tell our secure server that the upload
+       * succeeded so it can create the
+       * project_media database record.
+       */
+      setMessage(
+        `Finishing video upload: ${video.name}`,
+      );
+
+      const completeResponse =
+        await fetch(
+          `/api/admin/projects/${project.id}/video-upload`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              action: "complete",
+              storagePath:
+                prepareData.storagePath,
+              fileName: video.name,
+              fileType: video.type,
+            }),
+          },
+        );
+
+      const completeData =
+        await completeResponse.json();
+
+      if (!completeResponse.ok) {
+        throw new Error(
+          completeData.error ||
+            `Unable to finish video upload for ${video.name}.`,
+        );
+      }
+    }
+  }
+
   async function handleSubmit(
     event: FormEvent<HTMLFormElement>,
   ) {
@@ -96,12 +216,31 @@ export default function ProjectEditForm({
     setError("");
 
     try {
+      /*
+       * First save the normal project data,
+       * cover image, gallery images and
+       * media removals through the existing
+       * project PATCH route.
+       *
+       * IMPORTANT:
+       * Videos are intentionally NOT added
+       * to this FormData anymore.
+       */
       const formData = new FormData();
 
       formData.append("title", title);
-      formData.append("description", description);
-      formData.append("projectType", projectType);
-      formData.append("location", location);
+      formData.append(
+        "description",
+        description,
+      );
+      formData.append(
+        "projectType",
+        projectType,
+      );
+      formData.append(
+        "location",
+        location,
+      );
       formData.append("status", status);
       formData.append(
         "featured",
@@ -111,20 +250,24 @@ export default function ProjectEditForm({
       if (removeMediaIds.length > 0) {
         formData.append(
           "removeMediaIds",
-          JSON.stringify(removeMediaIds),
+          JSON.stringify(
+            removeMediaIds,
+          ),
         );
       }
 
       if (coverImage) {
-        formData.append("coverImage", coverImage);
+        formData.append(
+          "coverImage",
+          coverImage,
+        );
       }
 
       projectImages.forEach((file) => {
-        formData.append("projectImages", file);
-      });
-
-      projectVideos.forEach((file) => {
-        formData.append("projectVideos", file);
+        formData.append(
+          "projectImages",
+          file,
+        );
       });
 
       const response = await fetch(
@@ -139,14 +282,24 @@ export default function ProjectEditForm({
 
       if (!response.ok) {
         throw new Error(
-          data.error || "Unable to update project.",
+          data.error ||
+            "Unable to update project.",
         );
       }
 
-      setMessage("Project updated successfully.");
+      /*
+       * Now upload videos directly to
+       * Supabase Storage.
+       */
+      await uploadVideosDirectly();
+
+      setMessage(
+        "Project updated successfully.",
+      );
 
       setTimeout(() => {
-        window.location.href = "/admin/projects";
+        window.location.href =
+          "/admin/projects";
       }, 1000);
     } catch (err) {
       console.error(err);
@@ -203,7 +356,9 @@ export default function ProjectEditForm({
             <textarea
               value={description}
               onChange={(event) =>
-                setDescription(event.target.value)
+                setDescription(
+                  event.target.value,
+                )
               }
               required
               rows={6}
@@ -221,7 +376,9 @@ export default function ProjectEditForm({
                 type="text"
                 value={projectType}
                 onChange={(event) =>
-                  setProjectType(event.target.value)
+                  setProjectType(
+                    event.target.value,
+                  )
                 }
                 placeholder="e.g. Building Construction"
                 className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -237,7 +394,9 @@ export default function ProjectEditForm({
                 type="text"
                 value={location}
                 onChange={(event) =>
-                  setLocation(event.target.value)
+                  setLocation(
+                    event.target.value,
+                  )
                 }
                 placeholder="e.g. Abuja, Nigeria"
                 className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
@@ -253,7 +412,9 @@ export default function ProjectEditForm({
             <select
               value={status}
               onChange={(event) =>
-                setStatus(event.target.value)
+                setStatus(
+                  event.target.value,
+                )
               }
               className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
             >
@@ -276,7 +437,9 @@ export default function ProjectEditForm({
               type="checkbox"
               checked={featured}
               onChange={(event) =>
-                setFeatured(event.target.checked)
+                setFeatured(
+                  event.target.checked,
+                )
               }
               className="h-4 w-4 rounded border-slate-300"
             />
@@ -328,7 +491,8 @@ export default function ProjectEditForm({
             accept="image/jpeg,image/png,image/webp"
             onChange={(event) =>
               setCoverImage(
-                event.target.files?.[0] ?? null,
+                event.target.files?.[0] ??
+                  null,
               )
             }
             className="mt-2 block w-full rounded-lg border border-slate-300 bg-white p-3 text-sm"
@@ -356,7 +520,9 @@ export default function ProjectEditForm({
           <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {galleryImages.map((image) => {
               const markedForRemoval =
-                removeMediaIds.includes(image.id);
+                removeMediaIds.includes(
+                  image.id,
+                );
 
               return (
                 <div
@@ -451,7 +617,9 @@ export default function ProjectEditForm({
           <div className="mt-6 grid gap-5 lg:grid-cols-2">
             {videos.map((video) => {
               const markedForRemoval =
-                removeMediaIds.includes(video.id);
+                removeMediaIds.includes(
+                  video.id,
+                );
 
               return (
                 <div
@@ -527,6 +695,10 @@ export default function ProjectEditForm({
             }
             className="mt-2 block w-full rounded-lg border border-slate-300 bg-white p-3 text-sm"
           />
+
+          <p className="mt-2 text-xs text-slate-500">
+            Videos are uploaded directly to Supabase Storage.
+          </p>
         </div>
       </section>
 
